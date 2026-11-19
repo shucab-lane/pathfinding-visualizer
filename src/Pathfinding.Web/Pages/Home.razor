@@ -1,0 +1,246 @@
+﻿@page "/"
+@using Pathfinding.Core
+
+<PageTitle>Pathfinding Visualizer</PageTitle>
+
+<div class="wrap">
+    <header>
+        <h1>Pathfinding Visualizer</h1>
+        <p>
+            Graph search algorithms written in <b>C#</b> and running in your browser with <b>Blazor WebAssembly</b>.
+            Draw walls and weighted terrain, then watch how A*, Dijkstra, BFS, DFS and greedy best-first search explore the grid.
+        </p>
+        <nav>
+            <a href="https://github.com/shucab-lane/pathfinding-visualizer">Source on GitHub</a>
+        </nav>
+    </header>
+
+    <div class="toolbar">
+        <label>
+            Algorithm
+            <select @bind="algorithmName" disabled="@running">
+                @foreach (var a in Pathfinders.All)
+                {
+                    <option value="@a.Name">@a.Name</option>
+                }
+            </select>
+        </label>
+        <label>
+            Speed
+            <select @bind="speed">
+                <option value="1">Slow</option>
+                <option value="4">Medium</option>
+                <option value="12">Fast</option>
+                <option value="1000">Instant</option>
+            </select>
+        </label>
+        <button class="primary" @onclick="RunAsync" disabled="@running">Visualize ▶</button>
+        <button @onclick="Compare" disabled="@running">Compare all</button>
+        <span class="sep"></span>
+        <button @onclick="GenerateMaze" disabled="@running">Maze</button>
+        <button @onclick="() => Scatter(0.28, 0)" disabled="@running">Random walls</button>
+        <button @onclick="() => Scatter(0.18, 0.22)" disabled="@running">Walls + weights</button>
+        <button @onclick="ClearSearch" disabled="@running">Clear path</button>
+        <button @onclick="ClearAll" disabled="@running">Reset</button>
+    </div>
+
+    <div class="toolbar tools">
+        <span class="hint">Draw:</span>
+        @foreach (var (tool, label) in Tools)
+        {
+            <button class="@(currentTool == tool ? "active" : "")" @onclick="() => currentTool = tool">@label</button>
+        }
+        <span class="legend">
+            <i class="cell start"></i>start <i class="cell goal"></i>goal <i class="cell weight"></i>weight (cost @Grid.WeightCost)
+            <i class="cell visited"></i>explored <i class="cell path"></i>path
+        </span>
+    </div>
+
+    <div class="grid" style="grid-template-columns: repeat(@grid.Cols, 1fr)"
+         @onmouseup="() => mouseDown = false" @onmouseleave="() => mouseDown = false">
+        @for (var r = 0; r < grid.Rows; r++)
+        {
+            for (var c = 0; c < grid.Cols; c++)
+            {
+                var p = new Point(r, c);
+                <div class="@CellClass(p)"
+                     @onmousedown="() => OnDown(p)" @onmousedown:preventDefault
+                     @onmouseenter="() => OnEnter(p)"></div>
+            }
+        }
+    </div>
+
+    @if (last is not null)
+    {
+        <div class="stats">
+            <div><small>Algorithm</small><b>@last.Algorithm</b></div>
+            <div><small>Cells explored</small><b>@last.Visited.Count</b></div>
+            <div><small>Path cost</small><b>@(last.Found ? last.Cost.ToString() : "no path")</b></div>
+            <div><small>Path length</small><b>@(last.Found ? last.Path.Count.ToString() : "–")</b></div>
+            <div><small>Search time</small><b>@last.Elapsed.TotalMilliseconds.ToString("0.00") ms</b></div>
+        </div>
+    }
+
+    @if (comparison.Count > 0)
+    {
+        var best = comparison.Where(x => x.Found).Select(x => x.Cost).DefaultIfEmpty(0).Min();
+        <table class="compare">
+            <thead>
+                <tr><th>Algorithm</th><th>Explored</th><th>Path cost</th><th>Steps</th><th>Time</th><th>Result</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var row in comparison.OrderBy(r => r.Found ? r.Cost : int.MaxValue).ThenBy(r => r.Visited.Count))
+                {
+                    <tr>
+                        <td>@row.Algorithm</td>
+                        <td>@row.Visited.Count</td>
+                        <td>@(row.Found ? row.Cost.ToString() : "–")</td>
+                        <td>@(row.Found ? row.Path.Count.ToString() : "–")</td>
+                        <td>@row.Elapsed.TotalMilliseconds.ToString("0.00") ms</td>
+                        <td>@(row.Found && row.Cost == best ? "✓ lowest cost" : row.Found ? $"+{row.Cost - best} cost" : "no path")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+
+    <section class="about">
+        <h2>How the algorithms compare</h2>
+        <ul>
+            <li><b>Dijkstra</b> expands cells in order of distance from the start using a priority queue, so it always finds the cheapest path.</li>
+            <li><b>A*</b> adds a Manhattan-distance heuristic. The heuristic never overestimates, so A* is still optimal but explores far fewer cells.</li>
+            <li><b>Breadth-first search</b> finds the fewest <i>steps</i> but ignores weights, so it can walk straight through expensive terrain.</li>
+            <li><b>Greedy best-first</b> only follows the heuristic. It is fast but not optimal.</li>
+            <li><b>Depth-first search</b> dives down one branch at a time and usually finds long, winding paths.</li>
+        </ul>
+    </section>
+</div>
+
+@code {
+    private enum Tool { Wall, Weight, Erase, Start, Goal }
+    private static readonly (Tool, string)[] Tools =
+        [(Tool.Wall, "Walls"), (Tool.Weight, "Weights"), (Tool.Erase, "Eraser"), (Tool.Start, "Move start"), (Tool.Goal, "Move goal")];
+
+    private readonly Grid grid = new(23, 51);
+    private readonly HashSet<Point> visited = [];
+    private readonly HashSet<Point> path = [];
+    private readonly Random random = new();
+    private readonly List<SearchResult> comparison = [];
+
+    private string algorithmName = Pathfinders.All[0].Name;
+    private int speed = 4;
+    private Tool currentTool = Tool.Wall;
+    private bool mouseDown;
+    private bool running;
+    private SearchResult? last;
+
+    protected override void OnInitialized() => Scatter(0.18, 0.22);
+
+    private string CellClass(Point p)
+    {
+        if (p == grid.Start) return "cell start";
+        if (p == grid.Goal) return "cell goal";
+        var type = grid[p];
+        if (type == CellType.Wall) return "cell wall";
+        var cls = type == CellType.Weight ? "cell weight" : "cell";
+        if (path.Contains(p)) return cls + " path";
+        if (visited.Contains(p)) return cls + " visited";
+        return cls;
+    }
+
+    private void OnDown(Point p)
+    {
+        if (running) return;
+        mouseDown = true;
+        Paint(p);
+    }
+
+    private void OnEnter(Point p)
+    {
+        if (mouseDown && !running) Paint(p);
+    }
+
+    private void Paint(Point p)
+    {
+        switch (currentTool)
+        {
+            case Tool.Start when p != grid.Goal: grid.Start = p; grid[p] = CellType.Empty; break;
+            case Tool.Goal when p != grid.Start: grid.Goal = p; grid[p] = CellType.Empty; break;
+            case Tool.Wall: grid[p] = CellType.Wall; break;
+            case Tool.Weight: grid[p] = CellType.Weight; break;
+            case Tool.Erase: grid[p] = CellType.Empty; break;
+        }
+        ClearSearch();
+    }
+
+    private async Task RunAsync()
+    {
+        ClearSearch();
+        running = true;
+        var result = Pathfinders.ByName(algorithmName).FindPath(grid);
+        try
+        {
+            // Animate in batches: `speed` cells per frame
+            for (var i = 0; i < result.Visited.Count; i++)
+            {
+                visited.Add(result.Visited[i]);
+                if (i % speed == 0)
+                {
+                    StateHasChanged();
+                    await Task.Delay(16);
+                }
+            }
+            foreach (var p in result.Path)
+            {
+                path.Add(p);
+                if (speed < 1000)
+                {
+                    StateHasChanged();
+                    await Task.Delay(12);
+                }
+            }
+        }
+        finally
+        {
+            last = result;
+            running = false;
+            StateHasChanged();
+        }
+    }
+
+    private void Compare()
+    {
+        ClearSearch();
+        comparison.AddRange(Pathfinders.All.Select(a => a.FindPath(grid)));
+        var chosen = comparison.First(r => r.Algorithm == algorithmName);
+        visited.UnionWith(chosen.Visited);
+        path.UnionWith(chosen.Path);
+        last = chosen;
+    }
+
+    private void GenerateMaze()
+    {
+        new RecursiveBacktracker().Generate(grid, random);
+        ClearSearch();
+    }
+
+    private void Scatter(double walls, double weights)
+    {
+        new RandomScatter(walls, weights).Generate(grid, random);
+        ClearSearch();
+    }
+
+    private void ClearSearch()
+    {
+        visited.Clear();
+        path.Clear();
+        last = null;
+        comparison.Clear();
+    }
+
+    private void ClearAll()
+    {
+        grid.Clear();
+        ClearSearch();
+    }
+}

@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Pathfinding.Core/Pathfinding.Core.csproj" />
+    <Project Path="src/Pathfinding.Web/Pathfinding.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Pathfinding.Tests/Pathfinding.Tests.csproj" />
+  </Folder>
+</Solution>
